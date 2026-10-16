@@ -1,0 +1,126 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>楽天メルマガ拡張 回帰テスト</title>
+<pre id="result">RUNNING</pre>
+<main id="fixture"></main>
+<script type="module">
+const fixture = document.querySelector('#fixture');
+const output = document.querySelector('#result');
+const wait = (milliseconds = 30) => new Promise(resolve => setTimeout(resolve, milliseconds));
+const section = (checked = true) => `<section><h2>メルマガ配信設定</h2>
+  <p>楽天会員情報にご登録されているメールアドレス宛に、楽天市場より、お知らせします。</p>
+  <label><input class="target" type="checkbox" ${checked ? 'checked' : ''}>全てのお知らせを受け取る</label>
+  <label><input class="other" type="checkbox" checked>別の設定</label></section>`;
+let count = 0;
+function assert(value, message) {
+  if (!value) throw new Error(message);
+  count++;
+}
+try {
+  const source = await (await fetch('../content.js')).text();
+  const started = Date.now();
+  fixture.innerHTML = section();
+  let changes = 0;
+  fixture.addEventListener('change', () => changes++);
+  // Keep production URL guards intact; supply a local location to the closure.
+  new Function('location', source)({ origin: 'https://example.com', pathname: '/order-confirmation' });
+  assert(fixture.querySelector('.target').checked, 'Wrong origin must be ignored');
+  new Function('location', source)({ origin: 'https://cart.step.rakuten.co.jp', pathname: '/order-confirmation-other' });
+  assert(fixture.querySelector('.target').checked, 'Wrong path must be ignored');
+  new Function('location', source)({ origin: 'https://cart.step.rakuten.co.jp', pathname: '/order-confirmation' });
+  assert(!fixture.querySelector('.target').checked, 'Initially checked target must turn off');
+  assert(fixture.querySelector('.other').checked, 'Unrelated checkbox must remain on');
+  assert(changes === 1, 'Click must emit a change event');
+  fixture.innerHTML = section(false);
+  await wait();
+  assert(changes === 1, 'Unchecked target must not be clicked');
+  fixture.innerHTML = '';
+  await wait();
+  fixture.innerHTML = section();
+  await wait();
+  assert(!fixture.querySelector('.target').checked, 'Delayed/replaced target must turn off');
+  fixture.innerHTML = '<label><input class="target" type="checkbox" checked>全てのお知らせを受け取る</label>';
+  await wait();
+  assert(fixture.querySelector('.target').checked, 'Missing section markers must be ignored');
+  fixture.innerHTML = section().replace('type="checkbox" checked', 'type="checkbox" checked disabled');
+  await wait();
+  assert(fixture.querySelector('.target').checked, 'Disabled target must not be clicked');
+  fixture.querySelector('.target').disabled = false;
+  await wait();
+  assert(!fixture.querySelector('.target').checked, 'Enabled target must turn off');
+  fixture.innerHTML = `<section>メルマガ配信設定<p>楽天会員情報にご登録されているメールアドレス宛に</p>
+    <button role="checkbox" aria-checked="true" aria-label="全てのお知らせを受け取る">通知</button></section>`;
+  const custom = fixture.querySelector('button');
+  custom.addEventListener('click', () => custom.setAttribute('aria-checked', 'false'));
+  await wait();
+  assert(custom.getAttribute('aria-checked') === 'false', 'ARIA checkbox must turn off');
+  // Structure from the supplied page, with shop names replaced by dummy text.
+  const actualSection = `<div class="newsletter-card"><div><span>メルマガ配信設定</span>
+    <span>楽天会員情報にご登録されているメールアドレス宛に、楽天市場より、会員限定のキャンペーン情報や楽天グループまたはその他の企業のお得な情報などが満載のメールマガジンをお送りいたします。</span></div>
+    <div><span>ショップからのお得なお知らせ</span><div><label><span><input type="checkbox" role="checkbox" checked aria-checked="true"></span><span><div><span>テストショップ</span></div></span></label></div></div>
+    <div><span>レビューのお願いメール</span><div><label><span><input type="checkbox" role="checkbox" checked aria-checked="true"></span><span><div><span>テストショップ</span></div></span></label></div></div>
+    <div><span>楽天からのメルマガ</span><div><label><span><input type="checkbox" role="checkbox" checked aria-checked="true"></span><span>食品・スイーツ（楽天グルメニュース）</span></label></div></div>
+    <div><button aria-label="すべての選択を解除" type="button"><span>すべての選択を解除</span></button></div>
+    <span>既に配信中のメルマガの停止は配信停止ページから行ってください。</span></div>`;
+  let applicationReady = true;
+  let clearClicks = 0;
+  // Model application-owned state: the clear action updates both DOM properties
+  // and ARIA, and has no effect until the page has initialized its handlers.
+  fixture.addEventListener('click', (event) => {
+    const button = event.target.closest('button[aria-label="すべての選択を解除"]');
+    if (!button) return;
+    clearClicks++;
+    if (!applicationReady) return;
+    for (const box of button.closest('.newsletter-card').querySelectorAll('input')) {
+      if (box.checked) box.click();
+      box.setAttribute('aria-checked', 'false');
+    }
+  });
+  fixture.innerHTML = `<form>${actualSection}<div>お気に入りショップ追加<label><input class="favorite" type="checkbox" checked>テストショップ</label></div>
+    <label><input class="address" type="checkbox" checked>お届け先リストへ登録する</label>
+    <label><input class="card" type="checkbox" checked>このカード情報を登録する</label></form>`;
+  const before = changes;
+  await wait();
+  assert([...fixture.querySelectorAll('.newsletter-card input')].every(box => !box.checked), 'Actual page: all three newsletter options must turn off');
+  assert(changes === before + 3, 'Actual page: all three options must notify application handlers');
+  assert(['.favorite', '.address', '.card'].every(selector => fixture.querySelector(selector).checked), 'Actual page: unrelated settings outside newsletter card must stay on');
+  fixture.querySelector('.newsletter-card').outerHTML = actualSection;
+  await wait();
+  assert([...fixture.querySelectorAll('.newsletter-card input')].every(box => !box.checked), 'Actual page: replacement card must turn off');
+  const after = changes;
+  fixture.querySelector('.newsletter-card').append(document.createElement('span'));
+  await wait();
+  assert(changes === after, 'Actual page: already unchecked options must stay untouched');
+  assert([...fixture.querySelectorAll('.newsletter-card input')].every(box => box.getAttribute('aria-checked') === 'false'), 'Application state must confirm opt-out');
+  const mismatched = fixture.querySelector('.newsletter-card input');
+  let toggledOn = false;
+  mismatched.addEventListener('click', () => { if (mismatched.checked) toggledOn = true; });
+  mismatched.setAttribute('aria-checked', 'true');
+  await wait(600);
+  assert(!mismatched.checked && mismatched.getAttribute('aria-checked') === 'false', 'ARIA mismatch must be resolved through the application action');
+  assert(!toggledOn, 'Retry must not toggle an unchecked input back on');
+
+  applicationReady = false;
+  const clicksBeforeInit = clearClicks;
+  fixture.querySelector('.newsletter-card').outerHTML = actualSection;
+  await wait(8000);
+  assert(clearClicks - clicksBeforeInit >= 4, 'Retries must continue beyond three attempts');
+  assert(clearClicks - clicksBeforeInit <= 5, 'Rejected clicks must back off');
+  applicationReady = true;
+  await wait(5500);
+  assert([...fixture.querySelectorAll('.newsletter-card input')].every(box => !box.checked && box.getAttribute('aria-checked') === 'false'), 'Late initialization must eventually opt out');
+
+  await wait(Math.max(0, 31000 - (Date.now() - started)));
+  const restored = fixture.querySelector('.newsletter-card input');
+  const lateClicks = clearClicks;
+  restored.checked = true; // Deliberately no DOM mutation or event.
+  await wait(1000);
+  assert(!restored.checked && clearClicks > lateClicks, 'Property-only reset after 30s must be detected');
+  const settledClicks = clearClicks;
+  await wait(1000);
+  assert(clearClicks === settledClicks, 'Verified opt-out must not cause repeated clicks');
+  output.textContent = `PASS: ${count} assertions`;
+} catch (error) {
+  output.textContent = `FAIL: ${error.stack}`;
+}
+</script>

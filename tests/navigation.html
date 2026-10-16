@@ -1,0 +1,87 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>楽天メルマガ拡張 遷移テスト</title>
+<pre id="result">RUNNING</pre>
+<main id="fixture"><section>
+  <h2>メルマガ配信設定</h2>
+  <p>楽天会員情報にご登録されているメールアドレス宛に</p>
+  <label><input type="checkbox" checked>全てのお知らせを受け取る</label>
+</section></main>
+<script type="module">
+const output = document.querySelector('#result');
+const box = document.querySelector('input');
+const wait = () => new Promise(resolve => setTimeout(resolve, 650));
+let count = 0;
+function assert(value, message) {
+  if (!value) throw new Error(message);
+  count++;
+}
+async function traverse(direction) {
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('History traversal timed out')), 3000);
+    window.addEventListener('popstate', () => { clearTimeout(timeout); resolve(); }, { once: true });
+    history[direction]();
+  });
+  await wait();
+}
+try {
+  const source = await (await fetch('../content.js')).text();
+  const manifest = await (await fetch('../manifest.json')).json();
+  assert(manifest.content_scripts[0].matches.includes('https://cart.step.rakuten.co.jp/*'), 'Manifest must inject on preceding pages');
+  history.replaceState(null, '', '/order-input');
+  const testLocation = {
+    origin: 'https://cart.step.rakuten.co.jp',
+    get pathname() { return location.pathname; },
+  };
+  // Capture the input handler to test the trusted-user branch without exposing
+  // a production test API. Actual browser history and timers remain unchanged.
+  let userClick;
+  const testDocument = new Proxy(document, {
+    get(target, key) {
+      if (key === 'addEventListener') return (type, handler, options) => {
+        if (type === 'click') userClick = handler;
+        target.addEventListener(type, handler, options);
+      };
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  // MutationObserver requires a real Node, so only event registration is wrapped.
+  const TestObserver = class extends MutationObserver {
+    observe(target, options) { super.observe(target === testDocument ? document : target, options); }
+  };
+  new Function('location', 'document', 'MutationObserver', source)(testLocation, testDocument, TestObserver);
+  await wait();
+  assert(box.checked, 'Previous page must remain untouched');
+  history.pushState(null, '', '/order-confirmation?l2-id=test');
+  await wait();
+  assert(!box.checked, 'pushState entry without a DOM mutation must opt out');
+  userClick({ isTrusted: true, target: box });
+  box.checked = true;
+  await wait();
+  assert(box.checked, 'Manual choice must persist during the same visit');
+  history.replaceState(null, '', '/order-confirmation?l2-id=changed');
+  await wait();
+  assert(box.checked, 'Query-only changes must preserve manual choice');
+  history.pushState(null, '', '/order-input');
+  await wait();
+  assert(box.checked, 'Exit must not change the checkbox');
+  await traverse('back');
+  assert(!box.checked, 'Back must restart automatic opt-out after manual override');
+  await traverse('forward');
+  box.checked = true;
+  await wait();
+  assert(box.checked, 'Forward to another page must leave it untouched');
+  history.replaceState(null, '', '/order-confirmation/');
+  await wait();
+  assert(!box.checked, 'replaceState entry with trailing slash must opt out');
+  history.replaceState(null, '', '/order-confirmation-other');
+  await wait();
+  box.checked = true;
+  await wait();
+  assert(box.checked, 'Similar path must not be treated as confirmation');
+  output.textContent = `PASS: ${count} assertions`;
+} catch (error) {
+  output.textContent = `FAIL: ${error.stack}`;
+}
+</script>

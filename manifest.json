@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "楽天市場 メルマガ自動オフ",
+  "version": "1.0.3",
+  "description": "楽天市場の購入確認画面でメルマガ配信設定のチェックを自動でオフにします。",
+  "content_scripts": [
+    {
+      "matches": ["https://cart.step.rakuten.co.jp/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
